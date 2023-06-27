@@ -2,7 +2,7 @@
 
 #include <cuda_runtime.h>
 
-#include <VSHelper.h>
+#include <VSHelper4.h>
 #include <utility>
 
 
@@ -344,7 +344,7 @@ void IlsInstance::compute(
     float * h_output, int ostride
 ) noexcept {
 
-    vs_bitblt(
+    vsh::bitblt(
         h_img, width * sizeof(float),
         h_input, istride * sizeof(float),
         width * sizeof(float), height
@@ -357,7 +357,7 @@ void IlsInstance::compute(
     }
     checkError(cudaStreamSynchronize(stream));
 
-    vs_bitblt(
+    vsh::bitblt(
         h_output, ostride * sizeof(float),
         h_img, width * sizeof(float),
         width * sizeof(float), height

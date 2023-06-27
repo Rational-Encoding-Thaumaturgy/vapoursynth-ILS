@@ -5,8 +5,8 @@
 #include <mutex>
 #include <vector>
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 #include <cuda_runtime_api.h>
 
@@ -105,39 +105,28 @@ struct IlsServer {
 
 
 struct IlsData {
-    VSNodeRef * node;
+    VSNode * node;
     const VSVideoInfo * vi;
     IlsServer server;
 };
 
-
-static void VS_CC ILSInit(
-    VSMap *in, VSMap *out, void **instanceData, VSNode *node,
-    VSCore *core, const VSAPI *vsapi
-) {
-
-    auto d = static_cast<IlsData *>(*instanceData);
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
-
-
-static const VSFrameRef *VS_CC ILSGetFrame(
-    int n, int activationReason, void **instanceData, void **frameData,
+static const VSFrame *VS_CC ILSGetFrame(
+    int n, int activationReason, void *instanceData, void **frameData,
     VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi
 ) {
 
-    auto d = static_cast<IlsData *>(*instanceData);
+    auto d = static_cast<IlsData *>(instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef * src = vsapi->getFrameFilter(n, d->node, frameCtx);
+        const VSFrame * src = vsapi->getFrameFilter(n, d->node, frameCtx);
 
         const int pl[] { 0, 1, 2 };
-        const VSFrameRef * fr[] { nullptr, src, src };
+        const VSFrame * fr[] { nullptr, src, src };
 
-        VSFrameRef * dst = vsapi->newVideoFrame2(
-            d->vi->format, d->vi->width, d->vi->height, fr, pl, src, core
+        VSFrame * dst = vsapi->newVideoFrame2(
+            &d->vi->format, d->vi->width, d->vi->height, fr, pl, src, core
         );
 
         d->server.compute(
@@ -174,17 +163,17 @@ static void VS_CC ILSCreate(
 ) {
     auto d = std::make_unique<IlsData>();
 
-    d->node = vsapi->propGetNode(in, "clip", 0, nullptr);
+    d->node = vsapi->mapGetNode(in, "clip", 0, nullptr);
 
     auto set_error = [&](const std::string & error_message) {
-        vsapi->setError(out, ("ILS: " + error_message).c_str());
+        vsapi->mapSetError(out, ("ILS: " + error_message).c_str());
         vsapi->freeNode(d->node);
     };
 
     d->vi = vsapi->getVideoInfo(d->node);
-    if (!isConstantFormat(d->vi) ||
-        d->vi->format->sampleType != stFloat ||
-        d->vi->format->bitsPerSample != 32
+    if (!vsh::isConstantVideoFormat(d->vi) ||
+        d->vi->format.sampleType != stFloat ||
+        d->vi->format.bitsPerSample != 32
     ) {
         return set_error("only constant format 32bit float input supported");
     }
@@ -196,11 +185,11 @@ static void VS_CC ILSCreate(
 
         T val;
         if constexpr (std::is_same_v<T, float>) {
-            val = static_cast<float>(vsapi->propGetFloat(in, name, 0, &error));
+            val = static_cast<float>(vsapi->mapGetFloat(in, name, 0, &error));
         } else if constexpr (std::is_same_v<T, int>) {
-            val = int64ToIntS(vsapi->propGetInt(in, name, 0, &error));
+            val = vsh::int64ToIntS(vsapi->mapGetInt(in, name, 0, &error));
         } else if constexpr (std::is_same_v<T, bool>) {
-            val = !!vsapi->propGetInt(in, name, 0, &error);
+            val = !!vsapi->mapGetInt(in, name, 0, &error);
         }
 
         if (error) {
@@ -227,26 +216,27 @@ static void VS_CC ILSCreate(
         device_id, num_instances, use_cuda_graph
     );
 
-    vsapi->createFilter(
-        in, out, "ILS",
-        ILSInit, ILSGetFrame, ILSFree,
-        fmParallel, 0, d.release(), core
+    VSFilterDependency deps[] = {
+        {d->node, rpStrictSpatial}
+    };
+
+    vsapi->createVideoFilter(
+        out, "ILS",
+        d->vi, ILSGetFrame, ILSFree,
+        fmParallel, deps, 1, d.release(), core
     );
 }
 
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(
-    VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin
-) {
-
-    configFunc(
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin(
         "com.wolframrhodium.ils", "ils",
         "CUDA implementation of Real-time Image Smoothing via Iterative Least Squares",
-        VAPOURSYNTH_API_VERSION, 1, plugin
+        VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin
     );
 
-    registerFunc("ILS",
-        "clip:clip;"
+    vspapi->registerFunction("ILS",
+        "clip:vnode;"
         "lambda:float:opt;"
         "iteration:int:opt;"
         "p:float:opt;"
@@ -257,6 +247,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(
         "device_id:int:opt;"
         "num_streams:int:opt;"
         "use_cuda_graph:int:opt;",
+        "clip:vnode",
         ILSCreate, nullptr, plugin
     );
 }
